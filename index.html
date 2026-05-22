@@ -734,7 +734,7 @@ async function loadPages(idx) {
       const div = document.createElement('div');
       div.className = 'reader-page';
       const img = document.createElement('img');
-      img.src = `${baseUrl}/data/${hash}/${f}`;
+      img.src = `${PROXY}?url=${encodeURIComponent(baseUrl+'/data/'+hash+'/'+f)}`;
       img.loading = i < 3 ? 'eager' : 'lazy';
       img.onerror = () => { div.innerHTML = `<div class="reader-page-ph">Page ${i+1} failed</div>`; };
       div.appendChild(img);
