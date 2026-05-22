@@ -726,7 +726,7 @@ async function loadPages(idx) {
 
   try {
     // at-home server doesn't need proxy — it supports CORS from localhost
-    const res = await fetch(`${API}/at-home/server/${ch.id}`);
+    const res = await fetch(`${PROXY}?url=${encodeURIComponent(API+'/at-home/server/'+ch.id)}`);
     const data = await res.json();
     const { baseUrl, chapter: { hash, data: files } } = data;
     pages.innerHTML = '';
