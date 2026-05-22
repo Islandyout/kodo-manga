@@ -473,7 +473,7 @@ async function loadHome() {
   try {
     const data = await apiFetch('/manga', {
       limit: 16, 'order[updatedAt]': 'desc', 'includes[]': 'cover_art',
-      'contentRating[]': ['safe', 'suggestive'], 'availableTranslatedLanguage[]': ['en']
+      'contentRating[]': ['safe', 'suggestive'], availableTranslatedLanguage: 'en'
     });
     renderGrid('recent-grid', data.data);
     heroItems = data.data.slice(0, 6);
@@ -514,7 +514,7 @@ async function loadHome() {
 async function loadPopular(mode) {
   renderGrid('popular-grid', [], true);
   try {
-    const params = { limit: 16, 'order[followedCount]': 'desc', 'includes[]': 'cover_art', 'contentRating[]': ['safe','suggestive'], 'availableTranslatedLanguage[]': ['en'] };
+    const params = { limit: 16, 'order[followedCount]': 'desc', 'includes[]': 'cover_art', 'contentRating[]': ['safe','suggestive'], availableTranslatedLanguage: 'en' };
     if (mode !== 'top' && GENRES[mode]) params['includedTags[]'] = GENRES[mode];
     const data = await apiFetch('/manga', params);
     renderGrid('popular-grid', data.data);
@@ -550,7 +550,7 @@ async function loadGenre(g) {
   document.getElementById('genre-section-label').textContent = g.charAt(0).toUpperCase() + g.slice(1);
   renderGrid('genre-grid', [], true);
   try {
-    const data = await apiFetch('/manga', { limit: 20, 'includedTags[]': GENRES[g], 'order[followedCount]': 'desc', 'includes[]': 'cover_art', 'contentRating[]': ['safe','suggestive'], 'availableTranslatedLanguage[]': ['en'] });
+    const data = await apiFetch('/manga', { limit: 20, 'includedTags[]': GENRES[g], 'order[followedCount]': 'desc', 'includes[]': 'cover_art', 'contentRating[]': ['safe','suggestive'], availableTranslatedLanguage: 'en' });
     renderGrid('genre-grid', data.data);
     document.getElementById('genre-section-label').scrollIntoView({ behavior: 'smooth' });
   } catch(e) { renderGrid('genre-grid', [], false, 'Failed: '+e.message); }
