@@ -38,16 +38,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Allow all MangaDex domains and at-home CDN servers (any hostname) for manga page images
-  const allowedDomains = ['mangadex.org', 'mangadex.network'];
-  const isMangaDex = allowedDomains.some(h =>
-    targetUrl.hostname === h || targetUrl.hostname.endsWith('.' + h)
-  );
-  const isAtHomeCDN = target.includes('/data/') || target.includes('/data-saver/');
-  if (!isMangaDex && !isAtHomeCDN) {
-    res.writeHead(403, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Domain not allowed: ' + targetUrl.hostname }));
-    return;
+  const allowed = ['api.mangadex.org', 'uploads.mangadex.org'];
+  if (!allowed.some(h => targetUrl.hostname === h || targetUrl.hostname.endsWith('.' + h))) {
+    // Also allow at-home CDN servers (any domain, for manga pages)
+    if (!req.url.includes('at-home') && !target.includes('/data/')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Domain not allowed: ' + targetUrl.hostname }));
+      return;
+    }
   }
 
   console.log('→', target.substring(0, 80));
@@ -83,7 +81,7 @@ const server = http.createServer((req, res) => {
   proxyReq.end();
 });
 
-server.listen(process.env.PORT || 3300, '0.0.0.0', () => {
+server.listen(process.env.PORT || PORT, '0.0.0.0', () => {
   console.log(`\n✅ Kodo proxy running at http://localhost:${PORT}`);
   console.log('   Now open index.html in your browser.\n');
 });
