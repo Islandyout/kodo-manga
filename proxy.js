@@ -83,7 +83,7 @@ const server = http.createServer((req, res) => {
   proxyReq.end();
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(process.env.PORT || 3300, '0.0.0.0', () => {
   console.log(`\n✅ Kodo proxy running at http://localhost:${PORT}`);
   console.log('   Now open index.html in your browser.\n');
 });
