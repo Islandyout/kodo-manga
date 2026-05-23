@@ -1,16 +1,28 @@
-// MangaDex proxy server — run with: node proxy.js
-// Then open index.html in your browser
+// KŌDŌ Multi-Source Proxy Server
+// Run: node proxy.js
 
 const http = require('http');
 const https = require('https');
 const url = require('url');
 
-const PORT = 3300;
+const PORT = process.env.PORT || 3300;
+
+const ALLOWED_DOMAINS = [
+  'api.mangadex.org',
+  'uploads.mangadex.org',
+  'graphql.anilist.co',
+  'api.jikan.moe',
+  'mangaplus.shueisha.co.jp'
+];
+
+function isAllowed(hostname, fullUrl = '') {
+  if (fullUrl.includes('/data/') || fullUrl.includes('/at-home/server/')) return true;
+  return ALLOWED_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
+}
 
 const server = http.createServer((req, res) => {
-  // CORS headers — allow everything
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'OPTIONS') {
@@ -19,16 +31,27 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Health check
+  if (req.url === '/' || req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      service: 'KODO Multi-Source Proxy',
+      uptime: process.uptime(),
+      sources: ['MangaDex', 'AniList', 'Jikan', 'MangaPlus']
+    }));
+    return;
+  }
+
   const parsed = url.parse(req.url, true);
   const target = parsed.query.url;
 
   if (!target) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Missing ?url= param' }));
+    res.end(JSON.stringify({ error: 'Missing ?url= parameter' }));
     return;
   }
 
-  // Only allow MangaDex domains
   let targetUrl;
   try {
     targetUrl = new url.URL(target);
@@ -38,50 +61,58 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const allowed = ['api.mangadex.org', 'uploads.mangadex.org'];
-  if (!allowed.some(h => targetUrl.hostname === h || targetUrl.hostname.endsWith('.' + h))) {
-    // Also allow at-home CDN servers (any domain, for manga pages)
-    if (!req.url.includes('at-home') && !target.includes('/data/')) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Domain not allowed: ' + targetUrl.hostname }));
-      return;
-    }
+  if (!isAllowed(targetUrl.hostname, target)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Domain not allowed', host: targetUrl.hostname }));
+    return;
   }
 
-  console.log('→', target.substring(0, 80));
+  console.log(`→ ${req.method} ${target.substring(0, 120)}`);
 
   const options = {
     hostname: targetUrl.hostname,
     path: targetUrl.pathname + (targetUrl.search || ''),
-    method: 'GET',
+    method: req.method,
     headers: {
-      'User-Agent': 'Kodo-MangaReader/1.0',
-      'Accept': 'application/json, image/*, */*',
+      'User-Agent': 'KODO-MangaReader/2.0',
+      'Accept': '*/*',
+      'Referer': 'https://islandyout.github.io/'
     }
   };
 
+  // Forward Content-Type for POST (AniList GraphQL)
+  if (req.method === 'POST') {
+    options.headers['Content-Type'] = req.headers['content-type'] || 'application/json';
+    options.headers['Accept'] = 'application/json';
+  }
+
   const proxyReq = https.request(options, (proxyRes) => {
     const ct = proxyRes.headers['content-type'] || 'application/octet-stream';
-    res.writeHead(proxyRes.statusCode, {
+    res.writeHead(proxyRes.statusCode || 200, {
       'Content-Type': ct,
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=120',
+      'Cache-Control': 'public, max-age=300'
     });
     proxyRes.pipe(res);
   });
 
-  proxyReq.on('error', (e) => {
-    console.error('Proxy error:', e.message);
+  proxyReq.on('error', (err) => {
+    console.error('Proxy error:', err.message);
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: e.message }));
+      res.end(JSON.stringify({ error: err.message }));
     }
   });
 
-  proxyReq.end();
+  if (req.method === 'POST') {
+    req.pipe(proxyReq);
+  } else {
+    proxyReq.end();
+  }
 });
 
-server.listen(process.env.PORT || PORT, '0.0.0.0', () => {
-  console.log(`\n✅ Kodo proxy running at http://localhost:${PORT}`);
-  console.log('   Now open index.html in your browser.\n');
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n✅ KŌDŌ Proxy running on port ${PORT}`);
+  console.log('   Sources: MangaDex, AniList, Jikan, MangaPlus');
+  console.log(`   Health:  http://localhost:${PORT}/health\n`);
 });
