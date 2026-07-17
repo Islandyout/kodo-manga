@@ -143,6 +143,7 @@ section:last-of-type{padding-bottom:2.5rem}
 .reader-select{background:var(--panel);border:1px solid var(--border);color:var(--text);font-family:'Space Mono',monospace;font-size:.62rem;padding:.28rem .5rem;max-width:170px}
 .reader-pages{flex:1;overflow-y:auto;background:#090909;display:flex;flex-direction:column;align-items:center}
 .reader-page{width:100%;max-width:800px;flex-shrink:0}
+.reader-pages.fit-wide .reader-page{max-width:100%}
 .reader-page img{width:100%;height:auto;display:block}
 .reader-page-ph{aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:.65rem;letter-spacing:.1em;background:linear-gradient(135deg,#0e0e18,#12080a)}
 
@@ -209,7 +210,10 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
 </head>
 <body>
 
-<div id="offline-notice">⚠ Proxy not running — start it with: node proxy.js</div>
+<div id="offline-notice">⚠ No proxy reachable. Free hosts sleep (cold start can take ~1 min) —
+  <span style="text-decoration:underline;cursor:pointer" onclick="retryProxy()">Retry</span> ·
+  <span style="text-decoration:underline;cursor:pointer" onclick="setProxyUrl()">Set proxy URL</span> ·
+  or run locally: <code>node proxy.js</code></div>
 
 <!-- NAV -->
 <nav>
@@ -252,6 +256,13 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
     </div>
     <div class="hero-dots" id="hero-dots"></div>
   </div>
+
+  <section id="continue-section" style="display:none">
+    <div class="section-header">
+      <div class="section-title">Continue Reading</div>
+    </div>
+    <div class="manga-grid" id="continue-grid"></div>
+  </section>
 
   <section>
     <div class="section-header">
@@ -349,7 +360,9 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
 <div class="reader-overlay" id="reader-overlay">
   <div class="reader-nav">
     <div class="reader-title" id="reader-title">—</div>
+    <span id="reader-page-count" style="font-size:.62rem;color:var(--dim);flex-shrink:0"></span>
     <select class="reader-select" id="reader-select" onchange="jumpChapter(this.value)"></select>
+    <button class="btn-sm" id="fit-btn" onclick="toggleFit()">⇔ Wide</button>
     <button class="btn-sm" onclick="prevChapter()">← Prev</button>
     <button class="btn-sm" onclick="nextChapter()">Next →</button>
     <button class="btn-sm" onclick="closeReader()">✕</button>
@@ -376,7 +389,47 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
 // ─────────────────────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────────────────────
-const PROXY = 'https://kodo-manga.onrender.com';
+let PROXY = localStorage.getItem('kodo-proxy') || 'https://kodo-manga.onrender.com';
+const PROXY_CANDIDATES = [...new Set([
+  localStorage.getItem('kodo-proxy'),
+  'https://kodo-manga.onrender.com',
+  'http://localhost:3300',
+  'http://127.0.0.1:3300',
+].filter(Boolean))];
+
+async function probeProxy(base, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base}/health`, { signal: ctrl.signal });
+    const data = await res.json();
+    return res.ok && data.status === 'ok';
+  } catch { return false; }
+  finally { clearTimeout(timer); }
+}
+
+async function detectProxy() {
+  for (const candidate of PROXY_CANDIDATES) {
+    if (await probeProxy(candidate)) { PROXY = candidate; return true; }
+  }
+  // Second pass: a sleeping free-tier host can take ~50s to wake
+  if (await probeProxy(PROXY_CANDIDATES[0], 55000)) { PROXY = PROXY_CANDIDATES[0]; return true; }
+  return false;
+}
+
+function setProxyUrl() {
+  const current = localStorage.getItem('kodo-proxy') || '';
+  const next = prompt('Proxy base URL (empty to reset):', current || PROXY);
+  if (next === null) return;
+  if (next.trim()) localStorage.setItem('kodo-proxy', next.trim().replace(/\/+$/, ''));
+  else localStorage.removeItem('kodo-proxy');
+  location.reload();
+}
+
+function retryProxy() {
+  document.getElementById('offline-notice').style.display = 'none';
+  loadHome();
+}
 const SOURCES = {
   mangadex: { key: 'mangadex', label: 'MangaDex', type: 'reader' },
   anilist:  { key: 'anilist',  label: 'AniList', type: 'meta' },
@@ -628,6 +681,16 @@ function mergeItems(items) {
       continue;
     }
     const current = map.get(key);
+    // If the incoming entry is readable (MangaDex) and the stored one isn't,
+    // adopt its identity — otherwise the reader gets a non-MangaDex id and 404s.
+    if (item.canRead && !current.canRead) {
+      current.id = item.id;
+      current.sourceKey = item.sourceKey;
+      current.raw = item.raw;
+      if (item.siteUrl) current.siteUrl = item.siteUrl;
+      if (item.cover) current.cover = item.cover;
+      if (item.coverLarge) current.coverLarge = item.coverLarge;
+    }
     current.sourceLabels = [...new Set([...(current.sourceLabels || []), ...(item.sourceLabels || [item.sourceLabel]).filter(Boolean)])];
     if (!current.cover && item.cover) current.cover = item.cover;
     if (!current.coverLarge && item.coverLarge) current.coverLarge = item.coverLarge;
@@ -787,16 +850,16 @@ async function loadJikanTop(limit = 8) {
 }
 
 async function loadHome() {
-  try {
-    await mangadexFetch('/ping');
-    document.getElementById('offline-notice').style.display = 'none';
-  } catch {
+  const ok = await detectProxy();
+  if (!ok) {
     document.getElementById('offline-notice').style.display = 'block';
-    renderGrid('recent-grid', [], { error: 'Proxy not running. Start it with: node proxy.js' });
-    renderGrid('popular-grid', [], { error: 'Proxy not running. Start it with: node proxy.js' });
-    renderGrid('trend-grid', [], { error: 'Proxy not running. Start it with: node proxy.js' });
+    const msg = 'No proxy reachable. Run "node proxy.js" locally or set a proxy URL in the banner above.';
+    renderGrid('recent-grid', [], { error: msg });
+    renderGrid('popular-grid', [], { error: msg });
+    renderGrid('trend-grid', [], { error: msg });
     return;
   }
+  document.getElementById('offline-notice').style.display = 'none';
 
   try {
     const [recent, ani, jikan] = await Promise.allSettled([
@@ -943,7 +1006,8 @@ async function openModal(item) {
   const inLibrary = STATE.library.some(entry => `${entry.sourceKey}:${entry.id}` === `${item.sourceKey}:${item.id}`);
   const header = document.getElementById('modal-header');
   const body = document.getElementById('modal-body');
-  const openLabel = item.canRead ? '▶ Read Now' : '↗ Open Source';
+  const modalProgress = item.canRead ? getProgress(item.id) : null;
+  const openLabel = item.canRead ? (modalProgress ? `▶ Continue Ch.${escapeHtml(modalProgress.chapter)}` : '▶ Read Now') : '↗ Open Source';
 
   header.innerHTML = `
     <div class="modal-cover">${item.coverLarge || item.cover ? `<img src="${escapeHtml(item.coverLarge || item.cover)}" onerror="this.parentElement.innerHTML='📖'" loading="lazy">` : '📖'}</div>
@@ -978,25 +1042,23 @@ async function openModal(item) {
   if (!item.canRead) return;
 
   try {
-    const data = await mangadexFetch(`/manga/${item.id}/feed`, {
-      limit: 40,
-      'translatedLanguage[]': 'en',
-      'order[chapter]': 'desc',
-      'contentRating[]': ['safe', 'suggestive'],
-    });
-    const chapters = (data.data || []).filter(ch => ch.attributes?.chapter);
+    const chapters = (await fetchAllChapters(item.id)).slice().reverse(); // newest first
     const list = document.getElementById('ch-list');
     document.querySelector('.modal-body .loader')?.remove();
     if (!chapters.length) {
-      list.innerHTML = '<li style="padding:.5rem 0;color:var(--dim);font-size:.72rem">No English chapters found.</li>';
+      list.innerHTML = '<li style="padding:.5rem 0;color:var(--dim);font-size:.72rem">No readable English chapters found.</li>';
       return;
     }
-    list.innerHTML = chapters.map(ch => `
-      <li class="ch-item" onclick="openReaderChapter('${item.id}','${ch.id}')">
-        Chapter ${escapeHtml(ch.attributes.chapter)}${ch.attributes.title ? ` — ${escapeHtml(ch.attributes.title)}` : ''}
-        <span>${escapeHtml(timeAgo(ch.attributes.publishAt))}</span>
-      </li>
-    `).join('');
+    const progress = getProgress(item.id);
+    list.innerHTML = chapters.map(ch => {
+      const group = chapterGroup(ch);
+      const current = progress?.chapterId === ch.id;
+      return `
+      <li class="ch-item" onclick="openReaderChapter('${item.id}','${ch.id}')"${current ? ' style="border-left:2px solid var(--red);padding-left:.5rem"' : ''}>
+        ${current ? '▶ ' : ''}Chapter ${escapeHtml(ch.attributes.chapter)}${ch.attributes.title ? ` — ${escapeHtml(ch.attributes.title)}` : ''}
+        <span>${escapeHtml([group, timeAgo(ch.attributes.publishAt)].filter(Boolean).join(' · '))}</span>
+      </li>`;
+    }).join('');
   } catch (error) {
     document.querySelector('.modal-body .loader')?.remove();
     const list = document.getElementById('ch-list');
@@ -1027,6 +1089,92 @@ function openReaderFromModal() {
   if (!item) return;
   if (item.canRead) openReader(item);
   else openSourcePage(item);
+}
+
+// ─────────────────────────────────────────────────────────────
+// CHAPTERS (shared) + PROGRESS
+// ─────────────────────────────────────────────────────────────
+// Fetches the FULL chapter list (old code capped at 100 — long series were
+// truncated), drops external/official-only chapters that have no hosted
+// pages, and dedupes multiple scanlation uploads of the same chapter.
+async function fetchAllChapters(mangaId) {
+  const all = [];
+  let offset = 0;
+  let total = Infinity;
+  while (offset < total && offset < 2000) {
+    const data = await mangadexFetch(`/manga/${mangaId}/feed`, {
+      limit: 500,
+      offset,
+      'translatedLanguage[]': 'en',
+      'order[chapter]': 'asc',
+      'includes[]': 'scanlation_group',
+      'contentRating[]': ['safe', 'suggestive'],
+    });
+    const batch = data.data || [];
+    all.push(...batch);
+    total = Number(data.total ?? batch.length);
+    offset += 500;
+    if (!batch.length) break;
+  }
+  const byNum = new Map();
+  for (const ch of all) {
+    const attr = ch.attributes || {};
+    if (attr.externalUrl) continue;          // hosted elsewhere; no pages here
+    if (!attr.chapter) continue;
+    if (attr.pages === 0) continue;
+    const prev = byNum.get(attr.chapter);
+    if (!prev || toMs(attr.publishAt) > toMs(prev.attributes?.publishAt)) byNum.set(attr.chapter, ch);
+  }
+  return [...byNum.values()].sort((a, b) => parseFloat(a.attributes.chapter) - parseFloat(b.attributes.chapter));
+}
+
+function chapterGroup(ch) {
+  return ch.relationships?.find(rel => rel.type === 'scanlation_group')?.attributes?.name || '';
+}
+
+const PROGRESS_KEY = 'kodo-progress';
+const HISTORY_KEY = 'kodo-history';
+
+function readStore(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+
+function getProgress(mangaId) {
+  return readStore(PROGRESS_KEY, {})[mangaId] || null;
+}
+
+function saveProgress(mangaId, chapter) {
+  const map = readStore(PROGRESS_KEY, {});
+  map[mangaId] = { chapterId: chapter.id, chapter: chapter.attributes?.chapter || '', at: Date.now() };
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
+}
+
+function pushHistory(item) {
+  if (!item || !item.canRead) return;
+  const snapshot = { ...item };
+  delete snapshot.raw;
+  let history = readStore(HISTORY_KEY, []).filter(entry => entry.id !== item.id);
+  history.unshift(snapshot);
+  history = history.slice(0, 20);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+}
+
+function renderContinue() {
+  const section = document.getElementById('continue-section');
+  const grid = document.getElementById('continue-grid');
+  if (!section || !grid) return;
+  const history = readStore(HISTORY_KEY, []).filter(entry => getProgress(entry.id));
+  if (!history.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  grid.innerHTML = '';
+  history.slice(0, 8).forEach((item, i) => {
+    const prog = getProgress(item.id);
+    const wrapper = document.createElement('div');
+    wrapper.style.cursor = 'pointer';
+    wrapper.innerHTML = cardMarkup({ ...item, tags: [`Ch.${prog.chapter}`, 'Continue'] }, i);
+    wrapper.onclick = () => openReader(item);
+    grid.appendChild(wrapper);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1086,28 +1234,30 @@ function renderLibrary() {
 // ─────────────────────────────────────────────────────────────
 // READER
 // ─────────────────────────────────────────────────────────────
-async function openReader(item) {
+async function openReader(item, preferredChapterId = null) {
   if (!item.canRead) return openSourcePage(item);
   STATE.readerItem = item;
+  pushHistory(item);
   document.getElementById('reader-overlay').classList.add('open');
   document.getElementById('reader-title').textContent = item.title || 'Reader';
   document.getElementById('reader-select').innerHTML = '';
   document.getElementById('reader-pages').innerHTML = '<div class="loader"><div class="loader-ring"></div><div class="loader-text">Loading chapters…</div></div>';
 
   try {
-    const data = await mangadexFetch(`/manga/${item.id}/feed`, {
-      limit: 100,
-      'translatedLanguage[]': 'en',
-      'order[chapter]': 'asc',
-      'contentRating[]': ['safe', 'suggestive'],
-    });
-    STATE.readerChapters = (data.data || []).filter(ch => ch.attributes?.chapter)
-      .sort((a, b) => parseFloat(a.attributes.chapter) - parseFloat(b.attributes.chapter));
+    STATE.readerChapters = await fetchAllChapters(item.id);
+    if (!STATE.readerChapters.length) {
+      document.getElementById('reader-pages').innerHTML = '<div class="error-msg">No readable English chapters found. Official/external chapters open on the source site.</div>';
+      return;
+    }
     const sel = document.getElementById('reader-select');
     sel.innerHTML = STATE.readerChapters.map((ch, i) => `<option value="${i}">Ch.${escapeHtml(ch.attributes.chapter)}${ch.attributes.title ? ` — ${escapeHtml(ch.attributes.title)}` : ''}</option>`).join('');
-    STATE.readerIdx = Math.max(STATE.readerChapters.length - 1, 0);
-    sel.value = STATE.readerIdx;
-    await loadPages(STATE.readerIdx);
+    // Priority: explicit chapter → saved progress → chapter 1 (old code
+    // jumped to the NEWEST chapter, which spoils and disorients).
+    const targetId = preferredChapterId || getProgress(item.id)?.chapterId;
+    let idx = targetId ? STATE.readerChapters.findIndex(ch => ch.id === targetId) : 0;
+    if (idx < 0) idx = 0;
+    sel.value = idx;
+    await loadPages(idx);
   } catch (error) {
     document.getElementById('reader-pages').innerHTML = `<div class="error-msg">Failed to load chapters: ${escapeHtml(error.message)}</div>`;
   }
@@ -1118,28 +1268,7 @@ async function openReaderChapter(mangaId, chapterId) {
     || STATE.library.find(item => item.id === mangaId && item.sourceKey === 'mangadex')
     || STATE.currentModal;
   if (!found || found.sourceKey !== 'mangadex') return openSourcePage(found || STATE.currentModal);
-  STATE.readerItem = found;
-  document.getElementById('reader-overlay').classList.add('open');
-  document.getElementById('reader-pages').innerHTML = '<div class="loader"><div class="loader-ring"></div><div class="loader-text">Loading…</div></div>';
-
-  try {
-    const data = await mangadexFetch(`/manga/${mangaId}/feed`, {
-      limit: 100,
-      'translatedLanguage[]': 'en',
-      'order[chapter]': 'asc',
-      'contentRating[]': ['safe', 'suggestive'],
-    });
-    STATE.readerChapters = (data.data || []).filter(ch => ch.attributes?.chapter)
-      .sort((a, b) => parseFloat(a.attributes.chapter) - parseFloat(b.attributes.chapter));
-    const sel = document.getElementById('reader-select');
-    sel.innerHTML = STATE.readerChapters.map((ch, i) => `<option value="${i}">Ch.${escapeHtml(ch.attributes.chapter)}</option>`).join('');
-    STATE.readerIdx = STATE.readerChapters.findIndex(ch => ch.id === chapterId);
-    if (STATE.readerIdx < 0) STATE.readerIdx = Math.max(STATE.readerChapters.length - 1, 0);
-    sel.value = STATE.readerIdx;
-    await loadPages(STATE.readerIdx);
-  } catch (error) {
-    document.getElementById('reader-pages').innerHTML = `<div class="error-msg">Error: ${escapeHtml(error.message)}</div>`;
-  }
+  await openReader(found, chapterId);
 }
 
 async function loadPages(index) {
@@ -1155,24 +1284,63 @@ async function loadPages(index) {
     const data = await proxyRequest(`${API.mangadex}/at-home/server/${chapter.id}`);
     const { baseUrl, chapter: ch } = data;
     const files = ch?.data || [];
+    const saverFiles = ch?.dataSaver || [];
+    saveProgress(STATE.readerItem?.id || chapter.id, chapter);
     pages.innerHTML = '';
+    pages.scrollTop = 0;
     files.forEach((file, idx) => {
       const wrapper = document.createElement('div');
       wrapper.className = 'reader-page';
       const img = document.createElement('img');
-      img.loading = idx < 2 ? 'eager' : 'lazy';
+      img.loading = idx < 3 ? 'eager' : 'lazy';
+      img.dataset.page = idx + 1;
       img.src = proxyAsset(`${baseUrl}/data/${ch.hash}/${file}`);
-      img.onerror = () => { wrapper.innerHTML = `<div class="reader-page-ph">Page ${idx + 1} failed</div>`; };
+      // If the full-quality image fails, retry once with the data-saver
+      // version before giving up (MangaDex@Home nodes are flaky sometimes).
+      img.onerror = () => {
+        if (!img.dataset.retried && saverFiles[idx]) {
+          img.dataset.retried = '1';
+          img.src = proxyAsset(`${baseUrl}/data-saver/${ch.hash}/${saverFiles[idx]}`);
+        } else {
+          wrapper.innerHTML = `<div class="reader-page-ph">Page ${idx + 1} failed</div>`;
+        }
+      };
       wrapper.appendChild(img);
       pages.appendChild(wrapper);
     });
+    // Page counter via IntersectionObserver
+    const counter = document.getElementById('reader-page-count');
+    if (counter) {
+      counter.textContent = `1 / ${files.length}`;
+      const io = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) counter.textContent = `${entry.target.dataset.page} / ${files.length}`;
+        });
+      }, { root: pages, threshold: 0.5 });
+      pages.querySelectorAll('img[data-page]').forEach(img => io.observe(img));
+    }
+    // End-of-chapter footer
+    const footer = document.createElement('div');
+    footer.style.cssText = 'padding:2.5rem 1rem;text-align:center;width:100%;max-width:800px';
+    const isLast = index >= STATE.readerChapters.length - 1;
+    footer.innerHTML = isLast
+      ? '<div style="font-size:.7rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase">— End of available chapters —</div>'
+      : `<button class="btn-primary" onclick="nextChapter()">Next: Ch.${escapeHtml(STATE.readerChapters[index + 1].attributes.chapter)} →</button>`;
+    pages.appendChild(footer);
   } catch (error) {
     pages.innerHTML = `<div class="error-msg">Failed to load pages: ${escapeHtml(error.message)}</div>`;
   }
 }
 
+function toggleFit() {
+  document.getElementById('reader-pages').classList.toggle('fit-wide');
+  const btn = document.getElementById('fit-btn');
+  if (btn) btn.textContent = document.getElementById('reader-pages').classList.contains('fit-wide') ? '⇤ Fit' : '⇔ Wide';
+}
+
 function closeReader() {
   document.getElementById('reader-overlay').classList.remove('open');
+  renderContinue();
 }
 
 async function prevChapter() {
@@ -1426,6 +1594,7 @@ document.addEventListener('keydown', e => {
 // ─────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   renderLibrary();
+  renderContinue();
   await loadHome();
 });
 
