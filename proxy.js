@@ -19,6 +19,11 @@ const ALLOWED = [
   { suffix: '.mangadex.network' },
   { host: 'graphql.anilist.co' },
   { host: 'api.jikan.moe' },
+  // Comick: readable source for manhwa/manhua that MangaDex doesn't host.
+  { suffix: '.comick.fun' },
+  { suffix: '.comick.io' },
+  { host: 'comick.pictures' },
+  { suffix: '.comick.pictures' },
 ];
 
 function isAllowed(hostname) {

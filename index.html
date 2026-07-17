@@ -184,6 +184,7 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
 /* MULTI-SOURCE / TESTS */
 .source-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .tag.source-mangadex{background:rgba(232,64,64,.12);border-color:rgba(232,64,64,.28);color:#ffadad}
+.tag.source-comick{background:rgba(212,160,23,.12);border-color:rgba(212,160,23,.3);color:#f0d488}
 .tag.source-anilist{background:rgba(90,140,255,.12);border-color:rgba(90,140,255,.28);color:#b7ccff}
 .tag.source-jikan{background:rgba(130,110,255,.12);border-color:rgba(130,110,255,.28);color:#d2c9ff}
 .tag.source-read{background:rgba(50,180,80,.1);border-color:rgba(50,180,80,.3);color:#90dca4}
@@ -280,6 +281,7 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
       <div class="pills" id="pop-pills">
         <button class="pill active" onclick="switchPop(this,'top')">Top</button>
         <button class="pill" onclick="switchPop(this,'mangadex')">MangaDex</button>
+        <button class="pill" onclick="switchPop(this,'comick')">Comick</button>
         <button class="pill" onclick="switchPop(this,'anilist')">AniList</button>
         <button class="pill" onclick="switchPop(this,'jikan')">Jikan</button>
         <button class="pill" onclick="switchPop(this,'readable')">Readable</button>
@@ -380,7 +382,7 @@ footer{border-top:1px solid var(--border);padding:1.5rem 2.5rem;display:flex;jus
 
 <footer>
   <div class="footer-logo">光 KŌDŌ</div>
-  <div>Powered by MangaDex, AniList & Jikan</div>
+  <div>Powered by MangaDex, Comick, AniList & Jikan</div>
   <div>Personal use only</div>
 </footer>
 
@@ -432,6 +434,7 @@ function retryProxy() {
 }
 const SOURCES = {
   mangadex: { key: 'mangadex', label: 'MangaDex', type: 'reader' },
+  comick:   { key: 'comick',   label: 'Comick',   type: 'reader' },
   anilist:  { key: 'anilist',  label: 'AniList', type: 'meta' },
   jikan:    { key: 'jikan',    label: 'Jikan / MAL', type: 'meta' },
 };
@@ -455,6 +458,14 @@ const API = {
   anilist: 'https://graphql.anilist.co',
   jikan: 'https://api.jikan.moe/v4',
   uploads: 'https://uploads.mangadex.org',
+  comick: 'https://api.comick.fun',
+  comickImg: 'https://meo.comick.pictures',
+};
+
+// Comick genre slugs (its API filters by genre slug, not UUID like MangaDex)
+const COMICK_GENRES = {
+  action: 'action', romance: 'romance', fantasy: 'fantasy', horror: 'horror',
+  comedy: 'comedy', drama: 'drama', scifi: 'sci-fi',
 };
 
 const STATE = {
@@ -470,6 +481,7 @@ const STATE = {
   searchTimer: null,
   sourceMode: 'top',
   testsRan: false,
+  readableMatches: [],
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -564,6 +576,15 @@ async function anilistFetch(query, variables = {}) {
   });
 }
 
+async function comickFetch(path, params = {}) {
+  return proxyRequest(appendParams(new URL(API.comick + path), params).toString());
+}
+
+function comickCover(item) {
+  const key = item?.md_covers?.[0]?.b2key || item?.cover?.b2key;
+  return key ? proxyAsset(`${API.comickImg}/${key}`) : '';
+}
+
 function safeTitle(value) {
   if (!value) return 'Untitled';
   if (typeof value === 'string') return value;
@@ -582,6 +603,7 @@ function tagsFromMangaDex(item) {
 
 function sourceBadgeClass(sourceKey) {
   if (sourceKey === 'mangadex') return 'source-mangadex';
+  if (sourceKey === 'comick') return 'source-comick';
   if (sourceKey === 'anilist') return 'source-anilist';
   if (sourceKey === 'jikan') return 'source-jikan';
   return '';
@@ -667,6 +689,33 @@ function normalizeJikan(item) {
     tags: Array.isArray(item?.genres) ? item.genres.map(g => g.name).filter(Boolean) : [],
     siteUrl: item?.url || '',
     canRead: false,
+    raw: item,
+  };
+}
+
+function normalizeComick(item) {
+  // Comick uses a stable string "hid" as the primary key across its API.
+  const cover = comickCover(item);
+  const countryMap = { jp: 'Manga', kr: 'Manhwa', cn: 'Manhua' };
+  const origin = countryMap[item?.country] || '';
+  return {
+    id: item.hid || item.slug,
+    slug: item.slug,
+    sourceKey: 'comick',
+    sourceLabel: SOURCES.comick.label,
+    sourceLabels: [SOURCES.comick.label],
+    title: item?.title || item?.md_titles?.[0]?.title || 'Untitled',
+    description: safeDescription(item?.desc || ''),
+    cover,
+    coverLarge: cover,
+    status: item?.status === 2 ? 'completed' : (item?.status === 1 ? 'ongoing' : ''),
+    updatedAt: item?.uploaded_at || item?.last_chapter_at || item?.created_at || '',
+    popularity: Number(item?.follow_count || item?.user_follow_count || 0),
+    score: Number(item?.rating || item?.bayesian_rating || 0),
+    chapters: item?.last_chapter || '',
+    tags: [origin, ...((item?.md_comic_md_genres || item?.genres || []).map(g => g?.md_genres?.name || g?.name).filter(Boolean))].filter(Boolean).slice(0, 8),
+    siteUrl: item?.slug ? `https://comick.io/comic/${item.slug}` : '',
+    canRead: true,
     raw: item,
   };
 }
@@ -849,6 +898,29 @@ async function loadJikanTop(limit = 8) {
   return ((data?.data) || []).map(normalizeJikan);
 }
 
+async function loadComickRecent(limit = 8) {
+  const data = await comickFetch('/v1.0/search', { sort: 'uploaded', limit, page: 1 });
+  return (Array.isArray(data) ? data : []).map(normalizeComick);
+}
+
+async function loadComickPopular(limit = 8) {
+  const data = await comickFetch('/v1.0/search', { sort: 'follow', limit, page: 1 });
+  return (Array.isArray(data) ? data : []).map(normalizeComick);
+}
+
+async function loadComickGenre(genreKey, limit = 20) {
+  const slug = COMICK_GENRES[genreKey];
+  const params = { sort: 'follow', limit, page: 1 };
+  if (slug) params.genres = slug;
+  const data = await comickFetch('/v1.0/search', params);
+  return (Array.isArray(data) ? data : []).map(normalizeComick);
+}
+
+async function searchComick(q) {
+  const data = await comickFetch('/v1.0/search', { q, limit: 8, page: 1 });
+  return (Array.isArray(data) ? data : []).map(normalizeComick);
+}
+
 async function loadHome() {
   const ok = await detectProxy();
   if (!ok) {
@@ -862,13 +934,15 @@ async function loadHome() {
   document.getElementById('offline-notice').style.display = 'none';
 
   try {
-    const [recent, ani, jikan] = await Promise.allSettled([
+    const [recent, comick, ani, jikan] = await Promise.allSettled([
       loadMangaDexRecent(10),
+      loadComickRecent(12),
       loadAniListTrending(10),
       loadJikanTop(10),
     ]);
     const combined = mergeItems([
       ...(recent.status === 'fulfilled' ? recent.value : []),
+      ...(comick.status === 'fulfilled' ? comick.value : []),
       ...(ani.status === 'fulfilled' ? ani.value : []),
       ...(jikan.status === 'fulfilled' ? jikan.value : []),
     ]);
@@ -922,14 +996,17 @@ async function loadPopular(mode) {
     let items = [];
     if (mode === 'mangadex') {
       items = await loadMangaDexPopular(16);
+    } else if (mode === 'comick') {
+      items = await loadComickPopular(16);
     } else if (mode === 'anilist') {
       items = await loadAniListTrending(16);
     } else if (mode === 'jikan') {
       items = await loadJikanTop(16);
     } else {
-      const [a, b, c] = await Promise.allSettled([loadMangaDexPopular(10), loadAniListTrending(10), loadJikanTop(10)]);
+      const [a, cm, b, c] = await Promise.allSettled([loadMangaDexPopular(10), loadComickPopular(10), loadAniListTrending(10), loadJikanTop(10)]);
       items = mergeItems([
         ...(a.status === 'fulfilled' ? a.value : []),
+        ...(cm.status === 'fulfilled' ? cm.value : []),
         ...(b.status === 'fulfilled' ? b.value : []),
         ...(c.status === 'fulfilled' ? c.value : []),
       ]);
@@ -1034,7 +1111,10 @@ async function openModal(item) {
       <div class="loader"><div class="loader-ring"></div><div class="loader-text">Loading chapters…</div></div>
       <ul class="ch-list" id="ch-list"></ul>
     ` : `
-      <div class="error-msg" style="padding:1rem 0">This source does not host chapter pages. Use the source page or keep it in your library as metadata.</div>
+      <div class="section-title" style="margin-bottom:10px;font-size:.72rem">Read it</div>
+      <div class="error-msg" style="padding:.6rem 0">This entry is metadata only. Search readable sources for the same title:</div>
+      <button class="btn-primary" onclick="findReadable()">🔎 Find a readable source</button>
+      <div id="readable-results" style="margin-top:12px"></div>
     `}
   `;
   document.getElementById('modal-overlay').classList.add('open');
@@ -1042,7 +1122,7 @@ async function openModal(item) {
   if (!item.canRead) return;
 
   try {
-    const chapters = (await fetchAllChapters(item.id)).slice().reverse(); // newest first
+    const chapters = (await fetchAllChapters(item)).slice().reverse(); // newest first
     const list = document.getElementById('ch-list');
     document.querySelector('.modal-body .loader')?.remove();
     if (!chapters.length) {
@@ -1051,12 +1131,12 @@ async function openModal(item) {
     }
     const progress = getProgress(item.id);
     list.innerHTML = chapters.map(ch => {
-      const group = chapterGroup(ch);
       const current = progress?.chapterId === ch.id;
+      const idAttr = String(ch.id).replace(/'/g, '');
       return `
-      <li class="ch-item" onclick="openReaderChapter('${item.id}','${ch.id}')"${current ? ' style="border-left:2px solid var(--red);padding-left:.5rem"' : ''}>
-        ${current ? '▶ ' : ''}Chapter ${escapeHtml(ch.attributes.chapter)}${ch.attributes.title ? ` — ${escapeHtml(ch.attributes.title)}` : ''}
-        <span>${escapeHtml([group, timeAgo(ch.attributes.publishAt)].filter(Boolean).join(' · '))}</span>
+      <li class="ch-item" onclick="openReaderChapter('${escapeHtml(item.id)}','${escapeHtml(idAttr)}')"${current ? ' style="border-left:2px solid var(--red);padding-left:.5rem"' : ''}>
+        ${current ? '▶ ' : ''}Chapter ${escapeHtml(ch.number)}${ch.title ? ` — ${escapeHtml(ch.title)}` : ''}
+        <span>${escapeHtml([ch.group, timeAgo(ch.publishAt)].filter(Boolean).join(' · '))}</span>
       </li>`;
     }).join('');
   } catch (error) {
@@ -1064,6 +1144,49 @@ async function openModal(item) {
     const list = document.getElementById('ch-list');
     if (list) list.innerHTML = `<li style="padding:.5rem 0;color:var(--dim);font-size:.72rem">Failed to load chapters: ${escapeHtml(error.message)}</li>`;
   }
+}
+
+// For a metadata-only title, search the readable sources by name and offer
+// matches the user can actually open. This is what turns a dead "Open Source"
+// card (e.g. a manhwa that's only on AniList) into something readable.
+async function findReadable() {
+  const item = STATE.currentModal;
+  if (!item) return;
+  const box = document.getElementById('readable-results');
+  if (box) box.innerHTML = '<div class="loader"><div class="loader-ring" style="width:20px;height:20px;border-width:1px"></div></div>';
+  try {
+    const [cm, md] = await Promise.allSettled([searchComick(item.title), searchMangaDex(item.title)]);
+    const target = normalizeText(item.title);
+    const candidates = [
+      ...(cm.status === 'fulfilled' ? cm.value : []),
+      ...(md.status === 'fulfilled' ? md.value : []),
+    ].filter(c => c.canRead);
+    // Prefer exact normalized-title matches, then near matches
+    const exact = candidates.filter(c => normalizeText(c.title) === target);
+    const ranked = (exact.length ? exact : candidates).slice(0, 6);
+    if (!box) return;
+    if (!ranked.length) {
+      box.innerHTML = '<div class="error-msg" style="padding:.6rem 0">No readable source found for this title. It may not be scanlated yet.</div>';
+      return;
+    }
+    box.innerHTML = ranked.map((c, i) => `
+      <div class="search-result" onclick="openReadableMatch(${i})">
+        <div class="search-result-thumb">${c.cover ? `<img src="${escapeHtml(c.cover)}" loading="lazy" onerror="this.parentElement.innerHTML='📖'">` : '📖'}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.76rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.title)}</div>
+          <div style="font-size:.58rem;color:var(--dim)">${escapeHtml(c.sourceLabel)}${c.chapters ? ` · Ch.${escapeHtml(String(c.chapters))}` : ''}</div>
+        </div>
+        <span style="font-size:.58rem;color:var(--gold);flex-shrink:0">Read →</span>
+      </div>`).join('');
+    STATE.readableMatches = ranked;
+  } catch (error) {
+    if (box) box.innerHTML = `<div class="error-msg" style="padding:.6rem 0">Search failed: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function openReadableMatch(i) {
+  const match = (STATE.readableMatches || [])[i];
+  if (match) openReader(match);
 }
 
 function openSourcePage(item = STATE.currentModal) {
@@ -1092,19 +1215,20 @@ function openReaderFromModal() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CHAPTERS (shared) + PROGRESS
+// CHAPTERS (source-agnostic) + PROGRESS
 // ─────────────────────────────────────────────────────────────
-// Fetches the FULL chapter list (old code capped at 100 — long series were
-// truncated), drops external/official-only chapters that have no hosted
-// pages, and dedupes multiple scanlation uploads of the same chapter.
-async function fetchAllChapters(mangaId) {
+// A normalized chapter is: { id, number, title, group, publishAt }
+// Each reader source knows how to list chapters and fetch page image URLs.
+
+// MangaDex: paginate the full feed (old code capped at 100 — long series were
+// truncated), drop external/official-only chapters with no hosted pages, and
+// dedupe multiple scanlation uploads of the same chapter number.
+async function fetchMangaDexChapters(item) {
   const all = [];
-  let offset = 0;
-  let total = Infinity;
+  let offset = 0, total = Infinity;
   while (offset < total && offset < 2000) {
-    const data = await mangadexFetch(`/manga/${mangaId}/feed`, {
-      limit: 500,
-      offset,
+    const data = await mangadexFetch(`/manga/${item.id}/feed`, {
+      limit: 500, offset,
       'translatedLanguage[]': 'en',
       'order[chapter]': 'asc',
       'includes[]': 'scanlation_group',
@@ -1119,17 +1243,75 @@ async function fetchAllChapters(mangaId) {
   const byNum = new Map();
   for (const ch of all) {
     const attr = ch.attributes || {};
-    if (attr.externalUrl) continue;          // hosted elsewhere; no pages here
-    if (!attr.chapter) continue;
-    if (attr.pages === 0) continue;
+    if (attr.externalUrl || !attr.chapter || attr.pages === 0) continue;
     const prev = byNum.get(attr.chapter);
-    if (!prev || toMs(attr.publishAt) > toMs(prev.attributes?.publishAt)) byNum.set(attr.chapter, ch);
+    if (!prev || toMs(attr.publishAt) > toMs(prev._publishAt)) {
+      byNum.set(attr.chapter, {
+        id: ch.id,
+        number: attr.chapter,
+        title: attr.title || '',
+        group: ch.relationships?.find(r => r.type === 'scanlation_group')?.attributes?.name || '',
+        publishAt: attr.publishAt || '',
+        _publishAt: attr.publishAt || '',
+      });
+    }
   }
-  return [...byNum.values()].sort((a, b) => parseFloat(a.attributes.chapter) - parseFloat(b.attributes.chapter));
+  return [...byNum.values()].sort((a, b) => parseFloat(a.number) - parseFloat(b.number));
 }
 
-function chapterGroup(ch) {
-  return ch.relationships?.find(rel => rel.type === 'scanlation_group')?.attributes?.name || '';
+async function fetchMangaDexPages(chapter) {
+  const data = await proxyRequest(`${API.mangadex}/at-home/server/${chapter.id}`);
+  const { baseUrl, chapter: ch } = data;
+  return (ch?.data || []).map((file, i) => ({
+    url: proxyAsset(`${baseUrl}/data/${ch.hash}/${file}`),
+    fallback: ch?.dataSaver?.[i] ? proxyAsset(`${baseUrl}/data-saver/${ch.hash}/${ch.dataSaver[i]}`) : null,
+  }));
+}
+
+// Comick: chapters live under /comic/{hid}/chapters, pages under /chapter/{hid}
+async function fetchComickChapters(item) {
+  const byNum = new Map();
+  let page = 1, total = Infinity, got = 0;
+  while (got < total && page <= 20) {
+    const data = await comickFetch(`/comic/${item.id}/chapters`, { lang: 'en', limit: 100, page });
+    const batch = data?.chapters || [];
+    total = Number(data?.total ?? batch.length);
+    got += batch.length;
+    for (const ch of batch) {
+      if (!ch.chap) continue;
+      const prev = byNum.get(ch.chap);
+      if (!prev || (ch.up_count || 0) > (prev._up || 0)) {
+        byNum.set(ch.chap, {
+          id: ch.hid,
+          number: ch.chap,
+          title: ch.title || '',
+          group: Array.isArray(ch.group_name) ? ch.group_name.join(', ') : (ch.group_name || ''),
+          publishAt: ch.created_at || '',
+          _up: ch.up_count || 0,
+        });
+      }
+    }
+    if (!batch.length) break;
+    page++;
+  }
+  return [...byNum.values()].sort((a, b) => parseFloat(a.number) - parseFloat(b.number));
+}
+
+async function fetchComickPages(chapter) {
+  const data = await comickFetch(`/chapter/${chapter.id}`);
+  const images = data?.chapter?.md_images || [];
+  return images.map(img => ({ url: proxyAsset(`${API.comickImg}/${img.b2key}`), fallback: null }));
+}
+
+const READERS = {
+  mangadex: { chapters: fetchMangaDexChapters, pages: fetchMangaDexPages },
+  comick:   { chapters: fetchComickChapters,   pages: fetchComickPages },
+};
+
+async function fetchAllChapters(item) {
+  const reader = READERS[item.sourceKey];
+  if (!reader) return [];
+  return reader.chapters(item);
 }
 
 const PROGRESS_KEY = 'kodo-progress';
@@ -1235,7 +1417,7 @@ function renderLibrary() {
 // READER
 // ─────────────────────────────────────────────────────────────
 async function openReader(item, preferredChapterId = null) {
-  if (!item.canRead) return openSourcePage(item);
+  if (!item.canRead || !READERS[item.sourceKey]) return openSourcePage(item);
   STATE.readerItem = item;
   pushHistory(item);
   document.getElementById('reader-overlay').classList.add('open');
@@ -1244,13 +1426,13 @@ async function openReader(item, preferredChapterId = null) {
   document.getElementById('reader-pages').innerHTML = '<div class="loader"><div class="loader-ring"></div><div class="loader-text">Loading chapters…</div></div>';
 
   try {
-    STATE.readerChapters = await fetchAllChapters(item.id);
+    STATE.readerChapters = await fetchAllChapters(item);
     if (!STATE.readerChapters.length) {
-      document.getElementById('reader-pages').innerHTML = '<div class="error-msg">No readable English chapters found. Official/external chapters open on the source site.</div>';
+      document.getElementById('reader-pages').innerHTML = '<div class="error-msg">No readable English chapters found on this source. Try the source page, or search — another source may host it.</div>';
       return;
     }
     const sel = document.getElementById('reader-select');
-    sel.innerHTML = STATE.readerChapters.map((ch, i) => `<option value="${i}">Ch.${escapeHtml(ch.attributes.chapter)}${ch.attributes.title ? ` — ${escapeHtml(ch.attributes.title)}` : ''}</option>`).join('');
+    sel.innerHTML = STATE.readerChapters.map((ch, i) => `<option value="${i}">Ch.${escapeHtml(ch.number)}${ch.title ? ` — ${escapeHtml(ch.title)}` : ''}</option>`).join('');
     // Priority: explicit chapter → saved progress → chapter 1 (old code
     // jumped to the NEWEST chapter, which spoils and disorients).
     const targetId = preferredChapterId || getProgress(item.id)?.chapterId;
@@ -1264,10 +1446,11 @@ async function openReader(item, preferredChapterId = null) {
 }
 
 async function openReaderChapter(mangaId, chapterId) {
-  const found = STATE.homeItems.find(item => item.id === mangaId && item.sourceKey === 'mangadex')
-    || STATE.library.find(item => item.id === mangaId && item.sourceKey === 'mangadex')
+  const found = (STATE.currentModal && STATE.currentModal.id === mangaId) ? STATE.currentModal
+    : STATE.homeItems.find(item => item.id === mangaId)
+    || STATE.library.find(item => item.id === mangaId)
     || STATE.currentModal;
-  if (!found || found.sourceKey !== 'mangadex') return openSourcePage(found || STATE.currentModal);
+  if (!found || !READERS[found.sourceKey]) return openSourcePage(found || STATE.currentModal);
   await openReader(found, chapterId);
 }
 
@@ -1276,31 +1459,28 @@ async function loadPages(index) {
   STATE.readerIdx = index;
   document.getElementById('reader-select').value = index;
   const chapter = STATE.readerChapters[index];
-  document.getElementById('reader-title').textContent = `${STATE.readerItem?.title || 'Reader'} — Ch.${chapter.attributes.chapter}`;
+  document.getElementById('reader-title').textContent = `${STATE.readerItem?.title || 'Reader'} — Ch.${chapter.number}`;
   const pages = document.getElementById('reader-pages');
   pages.innerHTML = '<div class="loader"><div class="loader-ring"></div><div class="loader-text">Loading pages…</div></div>';
 
   try {
-    const data = await proxyRequest(`${API.mangadex}/at-home/server/${chapter.id}`);
-    const { baseUrl, chapter: ch } = data;
-    const files = ch?.data || [];
-    const saverFiles = ch?.dataSaver || [];
+    const reader = READERS[STATE.readerItem?.sourceKey];
+    const imageList = await reader.pages(chapter);   // [{ url, fallback }]
     saveProgress(STATE.readerItem?.id || chapter.id, chapter);
     pages.innerHTML = '';
     pages.scrollTop = 0;
-    files.forEach((file, idx) => {
+    imageList.forEach((page, idx) => {
       const wrapper = document.createElement('div');
       wrapper.className = 'reader-page';
       const img = document.createElement('img');
       img.loading = idx < 3 ? 'eager' : 'lazy';
       img.dataset.page = idx + 1;
-      img.src = proxyAsset(`${baseUrl}/data/${ch.hash}/${file}`);
-      // If the full-quality image fails, retry once with the data-saver
-      // version before giving up (MangaDex@Home nodes are flaky sometimes).
+      img.src = page.url;
+      // Retry once with a fallback (e.g. MangaDex data-saver) before failing.
       img.onerror = () => {
-        if (!img.dataset.retried && saverFiles[idx]) {
+        if (!img.dataset.retried && page.fallback) {
           img.dataset.retried = '1';
-          img.src = proxyAsset(`${baseUrl}/data-saver/${ch.hash}/${saverFiles[idx]}`);
+          img.src = page.fallback;
         } else {
           wrapper.innerHTML = `<div class="reader-page-ph">Page ${idx + 1} failed</div>`;
         }
@@ -1308,24 +1488,22 @@ async function loadPages(index) {
       wrapper.appendChild(img);
       pages.appendChild(wrapper);
     });
-    // Page counter via IntersectionObserver
     const counter = document.getElementById('reader-page-count');
     if (counter) {
-      counter.textContent = `1 / ${files.length}`;
+      counter.textContent = `1 / ${imageList.length}`;
       const io = new IntersectionObserver(entries => {
         entries.forEach(entry => {
-          if (entry.isIntersecting) counter.textContent = `${entry.target.dataset.page} / ${files.length}`;
+          if (entry.isIntersecting) counter.textContent = `${entry.target.dataset.page} / ${imageList.length}`;
         });
       }, { root: pages, threshold: 0.5 });
       pages.querySelectorAll('img[data-page]').forEach(img => io.observe(img));
     }
-    // End-of-chapter footer
     const footer = document.createElement('div');
     footer.style.cssText = 'padding:2.5rem 1rem;text-align:center;width:100%;max-width:800px';
     const isLast = index >= STATE.readerChapters.length - 1;
     footer.innerHTML = isLast
       ? '<div style="font-size:.7rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase">— End of available chapters —</div>'
-      : `<button class="btn-primary" onclick="nextChapter()">Next: Ch.${escapeHtml(STATE.readerChapters[index + 1].attributes.chapter)} →</button>`;
+      : `<button class="btn-primary" onclick="nextChapter()">Next: Ch.${escapeHtml(STATE.readerChapters[index + 1].number)} →</button>`;
     pages.appendChild(footer);
   } catch (error) {
     pages.innerHTML = `<div class="error-msg">Failed to load pages: ${escapeHtml(error.message)}</div>`;
@@ -1421,9 +1599,10 @@ async function runSearch(q) {
   clearTimeout(STATE.searchTimer);
   STATE.searchTimer = setTimeout(async () => {
     try {
-      const [md, al, jk] = await Promise.allSettled([searchMangaDex(q), searchAniList(q), searchJikan(q)]);
+      const [md, cm, al, jk] = await Promise.allSettled([searchMangaDex(q), searchComick(q), searchAniList(q), searchJikan(q)]);
       const merged = mergeItems([
         ...(md.status === 'fulfilled' ? md.value : []),
+        ...(cm.status === 'fulfilled' ? cm.value : []),
         ...(al.status === 'fulfilled' ? al.value : []),
         ...(jk.status === 'fulfilled' ? jk.value : []),
       ]);
@@ -1479,7 +1658,11 @@ async function loadGenre(g) {
   if (label) label.textContent = g.charAt(0).toUpperCase() + g.slice(1);
   renderGrid('genre-grid', [], { loading: true });
   try {
-    const items = await loadMangaDexGenre(g, 20);
+    const [md, cm] = await Promise.allSettled([loadMangaDexGenre(g, 20), loadComickGenre(g, 20)]);
+    const items = sortByPopular(mergeItems([
+      ...(md.status === 'fulfilled' ? md.value : []),
+      ...(cm.status === 'fulfilled' ? cm.value : []),
+    ])).slice(0, 30);
     renderGrid('genre-grid', items);
     label?.scrollIntoView({ behavior: 'smooth' });
   } catch (error) {
@@ -1533,6 +1716,7 @@ async function runNetworkChecks() {
   }
 
   await probe('MangaDex', () => loadMangaDexRecent(1), data => data[0]?.title);
+  await probe('Comick', () => loadComickRecent(1), data => data[0]?.title);
   await probe('AniList', () => loadAniListTrending(1), data => data[0]?.title);
   await probe('Jikan', () => loadJikanTop(1), data => data[0]?.title);
 
